@@ -82,6 +82,7 @@ function PatientScreen({ messages, setMessages, summary, setSummary }: { message
   };
 
   const [isLoading, setIsLoading] = useState(false);
+  const [isSummarizing, setIsSummarizing] = useState(false);
 
   const sendMessage = async (event?: FormEvent) => {
     event?.preventDefault();
@@ -111,27 +112,66 @@ function PatientScreen({ messages, setMessages, summary, setSummary }: { message
       setMessages((current) => [...current, assistantMessage]);
       
       // Dynamically generate the summary in the background
-      try {
-        const historyText = messages.concat([userMessage, assistantMessage])
-          .map(m => `${m.role}: ${m.text}`)
-          .join('\n');
-          
-        const summaryRes = await client.models.generateContent({
-          model: "gemini-1.5-flash",
-          contents: `Summarize this medical triage conversation into JSON. Return ONLY valid JSON matching this schema: {"priority": "High Priority" | "Medium Priority" | "Low Priority", "symptoms": ["array", "of", "strings"], "possibleCauses": "string"}. \n\nConversation:\n${historyText}`,
-          config: {
-            responseMimeType: "application/json",
-          }
-        });
+      // Dynamically generate the summary in the background with automatic retries for high demand (503)
+      setIsSummarizing(true);
+      
+      const historyText = messages.concat([userMessage, assistantMessage])
+        .map(m => `${m.role}: ${m.text}`)
+        .join('\n');
         
-        const rawText = summaryRes.text || "";
-        const jsonMatch = rawText.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-          setSummary(JSON.parse(jsonMatch[0]));
+      const patientHistory = "Oct 12, 2023 - Annual Physical (All vitals normal). Jun 04, 2022 - Urgent Care Visit (Treated for minor sprain).";
+      
+      const maxRetries = 3;
+      let attempt = 0;
+      let success = false;
+      
+      while (attempt < maxRetries && !success) {
+        try {
+          const summaryRes = await client.models.generateContent({
+            model: "gemini-3.8-flash",
+            contents: `Summarize this medical triage conversation into JSON. 
+            
+Patient's Known Past Medical History: ${patientHistory}
+
+Instructions:
+- Analyze the present conversation alongside the past medical history.
+- Determine the priority level.
+- List the key symptoms and issues (combining both past and present context if relevant).
+- Formulate possible causes based on the intersection of past and present issues.
+- Provide a short summary of current clinical literature or PubMed recommendations related to the possible causes.
+
+Return ONLY valid JSON matching this schema: {"priority": "High Priority" | "Medium Priority" | "Low Priority", "symptoms": ["array", "of", "strings"], "possibleCauses": "string", "pubmedRecommendations": "string"} 
+
+Conversation:
+${historyText}`,
+          });
+          
+          const rawText = summaryRes.text || "";
+          const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+          if (jsonMatch) {
+            setSummary(JSON.parse(jsonMatch[0]));
+            success = true;
+          } else {
+            console.error("Invalid summary format received from AI:", rawText);
+            alert("Symptom summary AI returned invalid format. Check console.");
+            break; // Don't retry on formatting errors
+          }
+        } catch (summaryError: any) {
+          const status = summaryError?.status || summaryError?.response?.status || 500;
+          const isRateLimit = status === 429 || status === 503 || status === "UNAVAILABLE";
+          
+          attempt++;
+          if (isRateLimit && attempt < maxRetries) {
+            console.warn(`Summary generation high demand (Attempt ${attempt}). Retrying in 2 seconds...`);
+            await new Promise(res => setTimeout(res, 2000 * attempt)); // Exponential backoff: 2s, 4s...
+          } else {
+            console.error("Failed to generate dynamic summary", summaryError);
+            alert(`Summary generation failed: ${summaryError?.message || 'Unknown error'}`);
+            break;
+          }
         }
-      } catch (summaryError) {
-        console.error("Failed to generate dynamic summary", summaryError);
       }
+      setIsSummarizing(false);
 
     } catch (error: any) {
       console.error("Failed to query agent:", error);
@@ -185,7 +225,7 @@ function PatientScreen({ messages, setMessages, summary, setSummary }: { message
 
         <section className="summary-card" aria-label="Symptom summary">
           <div className="summary-heading">
-            <p className="summary-title">Symptom Summary</p>
+            <p className="summary-title">Symptom Summary {isSummarizing && <span className="text-xs font-normal text-gray-500 animate-pulse ml-2">Updating...</span>}</p>
             <span className="priority-badge" style={{
               color: summary.priority === 'High Priority' ? '#dc2626' : summary.priority === 'Medium Priority' ? '#ea580c' : '#16a34a',
               backgroundColor: summary.priority === 'High Priority' ? '#fef2f2' : summary.priority === 'Medium Priority' ? '#fff7ed' : '#f0fdf4',
@@ -306,6 +346,13 @@ function ProviderScreen({ messages, summary }: { messages: Message[], summary: S
                     <p className="text-sm text-gray-800 font-medium">{summary.possibleCauses}</p>
                  </div>
                </div>
+
+               {summary.pubmedRecommendations && (
+                 <div className="bg-blue-50 p-4 rounded-xl border border-blue-100 mb-6">
+                    <p className="text-xs text-blue-800 uppercase tracking-wider font-semibold mb-2">PubMed Clinical Literature Recommendations</p>
+                    <div className="text-sm text-gray-800 font-medium markdown-body"><ReactMarkdown>{summary.pubmedRecommendations}</ReactMarkdown></div>
+                 </div>
+               )}
                
                <h3 className="text-sm font-bold text-gray-800 uppercase tracking-wider mb-3">Quick Actions</h3>
                <div className="flex flex-wrap gap-3">
@@ -370,12 +417,14 @@ export type SummaryData = {
   priority: "High Priority" | "Medium Priority" | "Low Priority";
   symptoms: string[];
   possibleCauses: string;
+  pubmedRecommendations?: string;
 };
 
 const initialSummary: SummaryData = {
   priority: "High Priority",
   symptoms: ["Persistent headache (3 days)", "Dizziness upon standing", "Sensitivity to light"],
-  possibleCauses: "Based on your symptoms, it is recommended to consult a primary care physician. Possible causes may include dehydration, migraines, or sinus pressure."
+  possibleCauses: "Based on your symptoms, it is recommended to consult a primary care physician. Possible causes may include dehydration, migraines, or sinus pressure.",
+  pubmedRecommendations: "Review recent literature on orthostatic hypotension triggers and acute migraine management protocols."
 };
 
 // Custom hook to sync state across browser tabs (for smoke and mirrors demo)

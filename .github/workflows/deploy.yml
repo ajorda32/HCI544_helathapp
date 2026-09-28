@@ -11,7 +11,7 @@ on:
 jobs:
   build:
     name: Build Docker Image
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     
     steps:
       - name: Checkout code
@@ -24,7 +24,19 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          push: false # Set to true to push to a registry (requires registry login step)
+          push: false
+          load: true # Ensures the built image is loaded into the host's Docker daemon
           tags: health-app-demo:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Deploy Application
+        run: |
+          echo "Stopping old container..."
+          docker stop health-app-demo-container || true
+          
+          echo "Removing old container..."
+          docker rm health-app-demo-container || true
+          
+          echo "Starting new container..."
+          docker run -d --restart unless-stopped --name health-app-demo-container -p 4173:4173 health-app-demo:latest
