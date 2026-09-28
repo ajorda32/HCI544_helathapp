@@ -104,7 +104,7 @@ function PatientScreen({ messages, setMessages, summary, setSummary }: { message
       
       const interaction = await client.interactions.create({
         agent: "antigravity-preview-09-2026",
-        environment: "d87c84b1a4bbfa4d92ff117ab0819040",
+        environment: import.meta.env.VITE_ENVIRONMENT_ID,
         input: text,
       });
 

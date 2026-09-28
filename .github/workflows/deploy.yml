@@ -29,6 +29,9 @@ jobs:
           tags: health-app-demo:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          build-args: |
+            VITE_GEMINI_API_KEY=${{ secrets.VITE_GEMINI_API_KEY }}
+            VITE_ENVIRONMENT_ID=${{ vars.VITE_ENVIRONMENT_ID }}
 
       - name: Deploy Application
         run: |
